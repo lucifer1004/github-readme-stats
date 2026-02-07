@@ -2,14 +2,23 @@
 
 ## Project summary
 
-Rust CLI that fetches GitHub user statistics via GraphQL and outputs JSON.
+Rust CLI that fetches GitHub user statistics via GraphQL (profile/contributions) and REST
+(commit sample, time distribution, language stats), then outputs JSON.
+Single HTTP library: `reqwest`.
 
 ## Repository layout
 
 - `src/main.rs`: CLI entry point and orchestration.
-- `src/api/`: GitHub API clients and GraphQL queries.
-- `src/models/`: JSON output models and helpers.
-- `build.rs`: build script for GraphQL query assets.
+- `src/config.rs`: TOML config file parsing (`github-readme-stats.toml`).
+- `src/api/mod.rs`: API module root, exports `GraphQLClient`.
+- `src/api/graphql/`: GraphQL client (`client.rs`), response models (`models.rs`), retry shim (`retry.rs`).
+- `src/api/rest/`: REST helpers -- `commit_search.rs`, `language_usage.rs`, `time_distribution.rs`.
+- `src/api/http.rs`: shared `reqwest::Client` builder (auth headers, timeouts).
+- `src/api/retry.rs`: generic retry with exponential backoff and rate-limit awareness.
+- `src/api/queries/`: `.graphql` files (`user.graphql`, `repo.graphql`) embedded at build time.
+- `src/models/`: JSON output models (`UserStats`, `PinnedRepo`, `LanguageUsage`, etc.).
+- `data/languages.yml`: GitHub Linguist language definitions snapshot (used at build time).
+- `build.rs`: build script that generates `queries.rs` and `languages.rs` from source data.
 - `.github/workflows/ci.yml`: CI checks (fmt, clippy, build, test).
 - `.github/workflows/release.yml`: tag-based release packaging.
 
@@ -19,35 +28,48 @@ Rust CLI that fetches GitHub user statistics via GraphQL and outputs JSON.
 - Lint: `cargo clippy -- -D warnings`
 - Build (release): `cargo build --release`
 - Test: `cargo test`
+- Local run with just: `just fetch <username>`
 
-## Running locally
+## Configuration
 
-Set required environment variables, then run the binary:
+Only `GHT` (GitHub Personal Access Token) is set via environment variable.
+All other settings live in `github-readme-stats.toml` in the working directory:
 
-- `GHT`: GitHub Personal Access Token with `read:user` scope.
-- `TIMEZONE`: optional, e.g. `+08:00` (defaults to `+00:00`).
-- `PINNED_REPOS`: optional, comma-separated `owner/repo`.
-- `ORGS`: optional, comma-separated orgs (REST mode only).
+```toml
+[time]
+timezone = "+08:00"
 
-Example:
+[repos]
+pinned = ["owner/repo1", "owner/repo2"]
+
+[language]
+commits_limit = 1000
+top_n = 10
+exclude = ["HTML", "CSS"]
+types = ["programming"]
+```
+
+Example run:
 
 ```
 export GHT="ghp_your_token"
-export TIMEZONE="+08:00"
-export PINNED_REPOS="owner/repo1,owner/repo2"
 cargo run -- your-username -o stats.json
 ```
 
 ## CLI flags
 
-- `--api graphql|rest`: GraphQL is default and includes richer data. REST is legacy and omits
-  `contribution_calendar`, `streaks`, `pinned_repos`, and `time_distribution`.
-- `-o, --output <path>`: output JSON path.
+- `<username>`: GitHub username (required, positional).
+- `-o, --output <path>`: output JSON path (default: `stats.json`).
 
-## GraphQL query assets
+## Build-time code generation
 
-`.graphql` files live in `src/api/queries/` and are embedded at build time by `build.rs`.
-If you change a query, re-run `cargo build` so `queries.rs` is regenerated.
+`build.rs` generates two files into `$OUT_DIR`:
+
+- `queries.rs`: GraphQL queries from `src/api/queries/*.graphql`.
+- `languages.rs`: extension-to-language lookup from `data/languages.yml` (GitHub Linguist snapshot).
+
+If you change a `.graphql` file or update `languages.yml`, re-run `cargo build` to regenerate.
+To update language definitions, re-download `data/languages.yml` from GitHub Linguist.
 
 ## Release flow
 
@@ -58,4 +80,6 @@ Tag `v*` to trigger `.github/workflows/release.yml`. It builds and packages
 
 - Keep JSON output backward compatible.
 - Prefer straightforward data transformations and avoid special cases.
-- Update docs if you add or change environment variables.
+- `reqwest` is the sole HTTP library -- no Octocrab.
+- Progress output goes to stderr via `eprintln!`.
+- Update `README.md` and `CHANGELOG.md` if you change config keys or CLI flags.

@@ -14,11 +14,6 @@ cargo install --git https://github.com/lucifer1004/github-readme-stats
 
 ```bash
 export GHT="ghp_your_token"
-
-# Basic usage
-github-readme-stats your-username -o stats.json
-
-# Optional settings are now read from github-readme-stats.toml
 github-readme-stats your-username -o stats.json
 ```
 
@@ -29,16 +24,16 @@ Create `github-readme-stats.toml` in the working directory for optional settings
 
 ```toml
 [time]
-timezone = "+08:00"
+timezone = "+08:00"       # UTC offset for time distribution
 
 [repos]
-pinned = ["owner/repo1", "owner/repo2"]
-orgs = ["my-org"]
+pinned = ["owner/repo1", "owner/repo2"]  # repos to fetch detailed stats for
 
 [language]
-commits_limit = 1000
-top_n = 10
-exclude = ["HTML", "CSS"]
+commits_limit = 1000          # max commits to sample (default 1000)
+top_n = 10                    # top N languages to include (default 10)
+exclude = ["HTML", "CSS"]     # languages to exclude (case-insensitive)
+types = ["programming"]       # Linguist types to include (default: ["programming"])
 ```
 
 ## Environment Variables
@@ -76,7 +71,10 @@ JSON with the following structure:
 
 ## Notes
 
+- Profile and contribution data are fetched via GraphQL; commit sample, time distribution, and language stats use REST.
 - `language_usage` is derived from commit file changes (additions + deletions), not repo sizes.
+- Language detection uses a build-time snapshot of [GitHub Linguist](https://github.com/github-linguist/linguist) `languages.yml`. To update, re-download `data/languages.yml` and rebuild.
+- By default, only `programming` languages are included. Set `language.types` to `["programming", "markup"]` etc. to widen the filter. Valid types: `programming`, `data`, `markup`, `prose`.
 - Time distribution and language usage share the same commit sample (`language.commits_limit`).
 - Language stats can be rate-limit heavy because each sampled commit fetches commit details.
 

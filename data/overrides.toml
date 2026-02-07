@@ -1,0 +1,54 @@
+# Extension overrides for ambiguous Linguist mappings.
+#
+# When multiple languages share an extension, Linguist uses heuristics and
+# a Bayesian classifier on file content to disambiguate. We don't have file
+# content (only filenames from commit details), so we pick the most popular
+# language for each conflicting extension.
+#
+# Format: extension (without dot, lowercase) = "Language Name"
+# The language must exist in languages.yml; its type is looked up automatically.
+#
+# To update: add/remove entries as community usage shifts.
+
+[extensions]
+al = "AL"
+as = "ActionScript"
+bas = "BASIC"
+cls = "TeX"
+cs = "C#"
+d = "D"
+e = "Eiffel"
+es = "JavaScript"
+f = "Fortran"
+for = "Fortran"
+fs = "F#"
+h = "C"
+hh = "C++"
+inc = "PHP"
+l = "Lex"
+lean = "Lean 4"
+m = "Objective-C"
+ml = "OCaml"
+mo = "Motoko"
+n = "Nemerle"
+nu = "Nushell"
+p = "Gnuplot"
+php = "PHP"
+pkl = "Pkl"
+pl = "Perl"
+pm = "Perl"
+pp = "Puppet"
+pro = "Prolog"
+r = "R"
+re = "Reason"
+rs = "Rust"
+s = "Assembly"
+sc = "Scala"
+sql = "SQL"
+t = "Perl"
+ts = "TypeScript"
+tsx = "TSX"
+typ = "Typst"
+v = "Verilog"
+yaml = "YAML"
+yml = "YAML"

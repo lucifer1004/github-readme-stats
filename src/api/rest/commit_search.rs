@@ -66,6 +66,12 @@ pub(crate) async fn fetch_commit_sample(
             }
         }
 
+        eprintln!(
+            "  commit search: page {}, {} commits so far",
+            page,
+            commits.len()
+        );
+
         if items_len < REST_COMMITS_PAGE_SIZE {
             break;
         }

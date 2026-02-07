@@ -86,6 +86,7 @@ impl GraphQLClient {
         let now = Utc::now();
         let one_year_ago = now - chrono::Duration::days(365);
 
+        eprintln!("fetching user profile...");
         let user = self
             .fetch_user_with_repos(username, &one_year_ago, &now)
             .await?;
@@ -94,8 +95,14 @@ impl GraphQLClient {
         let (age_years, age_days) = self.compute_account_age(now, user.created_at);
         let calendar = self.build_calendar(&user.contributions_collection);
         let streaks = calendar.compute_streaks();
+
+        eprintln!("fetching pinned repos ({})...", self.pinned_repos.len());
         let pinned_repos = self.fetch_pinned_repos(&one_year_ago, &user.id).await;
 
+        eprintln!(
+            "fetching commit sample (limit {})...",
+            self.language_config.commits_limit
+        );
         let commit_sample = match rest::fetch_commit_sample(
             &self.client,
             &user.login,
@@ -110,9 +117,13 @@ impl GraphQLClient {
             }
         };
 
+        eprintln!("computing time distribution...");
         let time_distribution = commit_sample
             .as_ref()
             .map(|commits| rest::compute_time_distribution(commits, self.timezone_offset));
+
+        let commit_count = commit_sample.as_ref().map(|c| c.len()).unwrap_or(0);
+        eprintln!("computing language usage ({commit_count} commits)...");
         let language_stats = if let Some(ref commits) = commit_sample {
             match rest::compute_language_usage(&self.client, commits, &self.language_config).await {
                 Ok(result) if result.1 > 0 => Some(result),
@@ -125,6 +136,8 @@ impl GraphQLClient {
         } else {
             None
         };
+
+        eprintln!("done.");
         let (first_issue, first_pr, first_repo) =
             self.first_contributions(&user.contributions_collection);
 
@@ -310,26 +323,35 @@ impl GraphQLClient {
         }
 
         let mut join_set = tokio::task::JoinSet::new();
-        for (owner, name) in &self.pinned_repos {
+        for (index, (owner, name)) in self.pinned_repos.iter().enumerate() {
             let client = self.clone();
             let owner = owner.clone();
             let name = name.clone();
             let since = *since;
             let author_id = author_id.to_string();
-            join_set
-                .spawn(async move { client.fetch_repo(&owner, &name, &since, &author_id).await });
+            join_set.spawn(async move {
+                client
+                    .fetch_repo(&owner, &name, &since, &author_id)
+                    .await
+                    .map(|repo| (index, repo))
+            });
         }
 
         let mut repos = Vec::new();
         while let Some(result) = join_set.join_next().await {
             match result {
-                Ok(Ok(repo)) => repos.push(repo),
+                Ok(Ok((index, repo))) => repos.push((index, repo)),
                 Ok(Err(e)) => eprintln!("warning: failed to fetch pinned repo: {e:#}"),
                 Err(e) => eprintln!("warning: failed to join pinned repo task: {e:#}"),
             }
         }
 
-        if repos.is_empty() { None } else { Some(repos) }
+        if repos.is_empty() {
+            None
+        } else {
+            repos.sort_by_key(|(index, _)| *index);
+            Some(repos.into_iter().map(|(_, repo)| repo).collect())
+        }
     }
 
     async fn fetch_repo(
