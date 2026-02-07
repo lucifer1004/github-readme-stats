@@ -1,0 +1,37 @@
+query UserStats($login: String!, $from: DateTime!, $to: DateTime!) {
+  user(login: $login) {
+    id
+    name
+    login
+    createdAt
+    followers {
+      totalCount
+    }
+    repositories(
+      ownerAffiliations: OWNER
+      first: 100
+      orderBy: { field: STARGAZERS, direction: DESC }
+    ) {
+      totalCount
+      nodes {
+        stargazerCount
+        forkCount
+      }
+    }
+    contributionsCollection(from: $from, to: $to) {
+      totalCommitContributions
+      totalPullRequestContributions
+      totalIssueContributions
+      contributionCalendar {
+        totalContributions
+        weeks {
+          contributionDays {
+            date
+            contributionCount
+            contributionLevel
+          }
+        }
+      }
+    }
+  }
+}

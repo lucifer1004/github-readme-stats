@@ -1,0 +1,31 @@
+query RepoStats(
+  $owner: String!
+  $name: String!
+  $since: GitTimestamp!
+  $authorId: ID!
+) {
+  repository(owner: $owner, name: $name) {
+    name
+    description
+    stargazerCount
+    forkCount
+    primaryLanguage {
+      name
+      color
+    }
+    defaultBranchRef {
+      target {
+        ... on Commit {
+          history(first: 100, since: $since, author: { id: $authorId }) {
+            nodes {
+              committedDate
+              additions
+              deletions
+            }
+            totalCount
+          }
+        }
+      }
+    }
+  }
+}
