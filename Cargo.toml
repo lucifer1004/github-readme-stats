@@ -5,6 +5,19 @@ edition = "2024"
 description = "Fetch GitHub user statistics as JSON"
 license = "MIT"
 repository = "https://github.com/lucifer1004/github-readme-stats"
+readme = "README.md"
+homepage = "https://github.com/lucifer1004/github-readme-stats"
+documentation = "https://docs.rs/github-readme-stats"
+keywords = ["github", "stats", "cli"]
+categories = ["command-line-utilities"]
+include = [
+  "/Cargo.toml",
+  "/Cargo.lock",
+  "/README.md",
+  "/LICENSE",
+  "/build.rs",
+  "/src/**",
+]
 
 [[bin]]
 name = "github-readme-stats"

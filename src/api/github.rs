@@ -214,7 +214,7 @@ impl GitHubClient {
                     .send()
             })
             .await?;
-        Ok(result.total_count.unwrap_or(0) as u64)
+        Ok(result.total_count.unwrap_or(0))
     }
 
     async fn count_issues(&self) -> Result<u64> {
@@ -227,7 +227,7 @@ impl GitHubClient {
                     .send()
             })
             .await?;
-        Ok(result.total_count.unwrap_or(0) as u64)
+        Ok(result.total_count.unwrap_or(0))
     }
 
     async fn retry<T, F, Fut>(&self, context: &str, mut f: F) -> Result<T>
