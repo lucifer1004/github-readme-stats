@@ -1,7 +1,12 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Datelike, FixedOffset, Timelike, Utc};
+use reqwest::{header::HeaderMap, StatusCode};
 use serde::{Deserialize, Serialize};
+use std::cmp::min;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::time::sleep;
 
+use crate::api::http;
 use crate::models::{
     ContributionCalendar, ContributionDay, ContributionWeek, PinnedRepo, TimeDistribution,
     UserStats,
@@ -11,8 +16,8 @@ use crate::models::{
 include!(concat!(env!("OUT_DIR"), "/queries.rs"));
 
 /// Implements [[RFC-0002:C-GRAPHQL-CLIENT]]
+#[derive(Clone)]
 pub struct GraphQLClient {
-    token: String,
     client: reqwest::Client,
     pinned_repos: Vec<(String, String)>, // (owner, name) pairs
     timezone_offset: FixedOffset,        // User's timezone for time distribution
@@ -20,6 +25,12 @@ pub struct GraphQLClient {
 
 const GRAPHQL_ENDPOINT: &str = "https://api.github.com/graphql";
 const REST_API_BASE: &str = "https://api.github.com";
+const GRAPHQL_REPOS_PAGE_SIZE: usize = 100;
+const REST_COMMITS_PAGE_SIZE: usize = 100;
+const REST_COMMITS_MAX_PAGES: u32 = 10;
+const RETRY_MAX_ATTEMPTS: usize = 3;
+const RETRY_BASE_DELAY_MS: u64 = 500;
+const RETRY_MAX_DELAY_MS: u64 = 5000;
 
 #[derive(Debug, Serialize)]
 struct GraphQLRequest<'a> {
@@ -75,6 +86,7 @@ struct CountNode {
 struct RepositoriesNode {
     total_count: u64,
     nodes: Vec<RepoStatsNode>,
+    page_info: PageInfoNode,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,6 +94,13 @@ struct RepositoriesNode {
 struct RepoStatsNode {
     stargazer_count: u64,
     fork_count: u64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PageInfoNode {
+    has_next_page: bool,
+    end_cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -226,7 +245,8 @@ impl GraphQLClient {
         pinned_repos_str: Option<String>,
         timezone_str: Option<String>,
     ) -> Self {
-        let client = reqwest::Client::new();
+        let client = http::build_github_client(&token)
+            .unwrap_or_else(|e| panic!("failed to build HTTP client: {e:#}"));
         let pinned_repos = pinned_repos_str
             .unwrap_or_default()
             .split(',')
@@ -246,24 +266,9 @@ impl GraphQLClient {
             .collect();
 
         // Parse timezone offset (e.g., "+08:00", "-05:00")
-        let timezone_offset = timezone_str
-            .as_deref()
-            .and_then(|s| {
-                // Try parsing as "+HH:MM" or "-HH:MM"
-                if s.len() >= 6 {
-                    let sign = if s.starts_with('-') { -1 } else { 1 };
-                    let hours: i32 = s[1..3].parse().ok()?;
-                    let mins: i32 = s[4..6].parse().ok()?;
-                    let total_secs = sign * (hours * 3600 + mins * 60);
-                    FixedOffset::east_opt(total_secs)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| FixedOffset::east_opt(0).unwrap());
+        let timezone_offset = parse_timezone_offset(timezone_str.as_deref());
 
         Self {
-            token,
             client,
             pinned_repos,
             timezone_offset,
@@ -276,89 +281,20 @@ impl GraphQLClient {
         let now = Utc::now();
         let one_year_ago = now - chrono::Duration::days(365);
 
-        // Fetch user profile and contributions
-        let user = self.fetch_user(username, &one_year_ago, &now).await?;
+        let user = self
+            .fetch_user_with_repos(username, &one_year_ago, &now)
+            .await?;
 
-        // Compute aggregates
-        let total_stars: u64 = user
-            .repositories
-            .nodes
-            .iter()
-            .map(|r| r.stargazer_count)
-            .sum();
-        let total_forks: u64 = user.repositories.nodes.iter().map(|r| r.fork_count).sum();
-
-        // Account age
-        let age = now.signed_duration_since(user.created_at);
-        let age_days = age.num_days().max(0) as u64;
-        let age_years = age_days / 365;
-
-        // Contribution calendar
-        let calendar = ContributionCalendar {
-            total_contributions: user
-                .contributions_collection
-                .contribution_calendar
-                .total_contributions,
-            weeks: user
-                .contributions_collection
-                .contribution_calendar
-                .weeks
-                .into_iter()
-                .map(|w| ContributionWeek {
-                    days: w
-                        .contribution_days
-                        .into_iter()
-                        .map(|d| ContributionDay {
-                            date: d.date,
-                            contribution_count: d.contribution_count,
-                            level: level_from_string(&d.contribution_level),
-                        })
-                        .collect(),
-                })
-                .collect(),
-        };
-
+        let (total_stars, total_forks) = self.compute_repo_totals(&user.repositories.nodes);
+        let (age_years, age_days) = self.compute_account_age(now, user.created_at);
+        let calendar = self.build_calendar(&user.contributions_collection);
         let streaks = calendar.compute_streaks();
-
-        // Fetch pinned repos (user-configured, not GitHub pinned items)
-        // Filter commits by the user's author ID
-        let pinned_repos = if self.pinned_repos.is_empty() {
-            None
-        } else {
-            let mut repos = Vec::new();
-            for (owner, name) in &self.pinned_repos {
-                match self.fetch_repo(owner, name, &one_year_ago, &user.id).await {
-                    Ok(repo) => repos.push(repo),
-                    Err(e) => eprintln!("warning: failed to fetch {owner}/{name}: {e:#}"),
-                }
-            }
-            if repos.is_empty() { None } else { Some(repos) }
-        };
-
-        // Fetch time distribution from commit history (REST API)
-        let time_distribution = match self.fetch_time_distribution(&user.login).await {
-            Ok(dist) => Some(dist),
-            Err(e) => {
-                eprintln!("warning: failed to fetch time distribution: {e:#}");
-                None
-            }
-        };
-
-        let first_issue = user
-            .contributions_collection
-            .first_issue_contribution
-            .as_ref()
-            .map(|c| c.occurred_at.format("%Y-%m-%d").to_string());
-        let first_pr = user
-            .contributions_collection
-            .first_pull_request_contribution
-            .as_ref()
-            .map(|c| c.occurred_at.format("%Y-%m-%d").to_string());
-        let first_repo = user
-            .contributions_collection
-            .first_repository_contribution
-            .as_ref()
-            .map(|c| c.occurred_at.format("%Y-%m-%d").to_string());
+        let pinned_repos = self
+            .fetch_pinned_repos(&one_year_ago, &user.id)
+            .await;
+        let time_distribution = self.fetch_time_distribution_optional(&user.login).await;
+        let (first_issue, first_pr, first_repo) =
+            self.first_contributions(&user.contributions_collection);
 
         Ok(UserStats {
             name: user.name,
@@ -398,16 +334,111 @@ impl GraphQLClient {
         })
     }
 
-    async fn fetch_user(
+    fn compute_repo_totals(&self, repos: &[RepoStatsNode]) -> (u64, u64) {
+        let stars = repos.iter().map(|r| r.stargazer_count).sum();
+        let forks = repos.iter().map(|r| r.fork_count).sum();
+        (stars, forks)
+    }
+
+    fn compute_account_age(&self, now: DateTime<Utc>, created_at: DateTime<Utc>) -> (u64, u64) {
+        let age = now.signed_duration_since(created_at);
+        let age_days = age.num_days().max(0) as u64;
+        let age_years = age_days / 365;
+        (age_years, age_days)
+    }
+
+    fn build_calendar(
+        &self,
+        collection: &ContributionsCollectionNode,
+    ) -> ContributionCalendar {
+        ContributionCalendar {
+            total_contributions: collection.contribution_calendar.total_contributions,
+            weeks: collection
+                .contribution_calendar
+                .weeks
+                .iter()
+                .map(|w| ContributionWeek {
+                    days: w
+                        .contribution_days
+                        .iter()
+                        .map(|d| ContributionDay {
+                            date: d.date.clone(),
+                            contribution_count: d.contribution_count,
+                            level: level_from_string(&d.contribution_level),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    fn first_contributions(
+        &self,
+        collection: &ContributionsCollectionNode,
+    ) -> (Option<String>, Option<String>, Option<String>) {
+        let first_issue = collection
+            .first_issue_contribution
+            .as_ref()
+            .map(|c| c.occurred_at.format("%Y-%m-%d").to_string());
+        let first_pr = collection
+            .first_pull_request_contribution
+            .as_ref()
+            .map(|c| c.occurred_at.format("%Y-%m-%d").to_string());
+        let first_repo = collection
+            .first_repository_contribution
+            .as_ref()
+            .map(|c| c.occurred_at.format("%Y-%m-%d").to_string());
+        (first_issue, first_pr, first_repo)
+    }
+
+    async fn fetch_user_with_repos(
         &self,
         username: &str,
         from: &DateTime<Utc>,
         to: &DateTime<Utc>,
     ) -> Result<UserNode> {
+        let mut repo_after: Option<String> = None;
+        let mut combined: Option<UserNode> = None;
+
+        loop {
+            let page = self
+                .fetch_user_page(username, from, to, repo_after.as_deref())
+                .await?;
+            if let Some(ref mut user) = combined {
+                merge_repository_page(&mut user.repositories, page.repositories);
+            } else {
+                combined = Some(page);
+            }
+
+            let page_info = combined
+                .as_ref()
+                .map(|u| u.repositories.page_info.clone())
+                .unwrap();
+            if !page_info.has_next_page {
+                break;
+            }
+            repo_after = page_info.end_cursor;
+            if repo_after.is_none() {
+                break;
+            }
+        }
+
+        combined.context("User not found")
+    }
+
+    async fn fetch_user_page(
+        &self,
+        username: &str,
+        from: &DateTime<Utc>,
+        to: &DateTime<Utc>,
+        repo_after: Option<&str>,
+    ) -> Result<UserNode> {
         let variables = serde_json::json!({
             "login": username,
             "from": from.to_rfc3339(),
             "to": to.to_rfc3339(),
+            "repoAfter": repo_after,
+            "repoFirst": GRAPHQL_REPOS_PAGE_SIZE,
         });
 
         let request = GraphQLRequest {
@@ -415,21 +446,11 @@ impl GraphQLClient {
             variables,
         };
 
-        let response = self
-            .client
-            .post(GRAPHQL_ENDPOINT)
-            .header("Authorization", format!("Bearer {}", self.token))
-            .header("User-Agent", "github-stats-typst")
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to send GraphQL request")?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("GraphQL request failed with status {}: {}", status, body);
-        }
+        let response = send_with_retry(
+            || self.client.post(GRAPHQL_ENDPOINT).json(&request),
+            "GraphQL user request",
+        )
+        .await?;
 
         let gql_response: UserResponse = response
             .json()
@@ -445,6 +466,54 @@ impl GraphQLClient {
             .data
             .and_then(|d| d.user)
             .context("User not found")
+    }
+
+    async fn fetch_pinned_repos(
+        &self,
+        since: &DateTime<Utc>,
+        author_id: &str,
+    ) -> Option<Vec<PinnedRepo>> {
+        if self.pinned_repos.is_empty() {
+            return None;
+        }
+
+        let mut join_set = tokio::task::JoinSet::new();
+        for (owner, name) in &self.pinned_repos {
+            let client = self.clone();
+            let owner = owner.clone();
+            let name = name.clone();
+            let since = *since;
+            let author_id = author_id.to_string();
+            join_set.spawn(async move {
+                client
+                    .fetch_repo(&owner, &name, &since, &author_id)
+                    .await
+            });
+        }
+
+        let mut repos = Vec::new();
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(Ok(repo)) => repos.push(repo),
+                Ok(Err(e)) => eprintln!("warning: failed to fetch pinned repo: {e:#}"),
+                Err(e) => eprintln!("warning: failed to join pinned repo task: {e:#}"),
+            }
+        }
+
+        if repos.is_empty() { None } else { Some(repos) }
+    }
+
+    async fn fetch_time_distribution_optional(
+        &self,
+        username: &str,
+    ) -> Option<TimeDistribution> {
+        match self.fetch_time_distribution(username).await {
+            Ok(dist) => Some(dist),
+            Err(e) => {
+                eprintln!("warning: failed to fetch time distribution: {e:#}");
+                None
+            }
+        }
     }
 
     async fn fetch_repo(
@@ -466,21 +535,11 @@ impl GraphQLClient {
             variables,
         };
 
-        let response = self
-            .client
-            .post(GRAPHQL_ENDPOINT)
-            .header("Authorization", format!("Bearer {}", self.token))
-            .header("User-Agent", "github-stats-typst")
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to send repo GraphQL request")?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Repo GraphQL request failed: {}", body);
-        }
+        let response = send_with_retry(
+            || self.client.post(GRAPHQL_ENDPOINT).json(&request),
+            "GraphQL repo request",
+        )
+        .await?;
 
         let gql_response: RepoResponse = response
             .json()
@@ -567,28 +626,18 @@ impl GraphQLClient {
         let mut earliest: Option<DateTime<FixedOffset>> = None;
         let mut latest: Option<DateTime<FixedOffset>> = None;
 
-        // Fetch up to 1000 commits (10 pages of 100)
-        for page in 1..=10 {
+        // Fetch up to REST_COMMITS_MAX_PAGES * REST_COMMITS_PAGE_SIZE commits
+        for page in 1..=REST_COMMITS_MAX_PAGES {
             let url = format!(
-                "{}/search/commits?q=author:{}&sort=author-date&order=desc&per_page=100&page={}",
-                REST_API_BASE, username, page
+                "{}/search/commits?q=author:{}&sort=author-date&order=desc&per_page={}&page={}",
+                REST_API_BASE, username, REST_COMMITS_PAGE_SIZE, page
             );
 
-            let response = self
-                .client
-                .get(&url)
-                .header("Authorization", format!("Bearer {}", self.token))
-                .header("User-Agent", "github-stats-typst")
-                .header("Accept", "application/vnd.github+json")
-                .send()
-                .await
-                .context("Failed to send commit search request")?;
-
-            let status = response.status();
-            if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
-                anyhow::bail!("Commit search failed with status {}: {}", status, body);
-            }
+            let response = send_with_retry(
+                || self.client.get(&url),
+                "REST commit search",
+            )
+            .await?;
 
             let search_result: CommitSearchResponse = response
                 .json()
@@ -627,7 +676,7 @@ impl GraphQLClient {
             }
 
             // If we got fewer than 100, we've reached the end
-            if search_result.items.len() < 100 {
+            if search_result.items.len() < REST_COMMITS_PAGE_SIZE {
                 break;
             }
         }
@@ -639,6 +688,109 @@ impl GraphQLClient {
         distribution.finalize();
         Ok(distribution)
     }
+}
+
+fn parse_timezone_offset(input: Option<&str>) -> FixedOffset {
+    input
+        .and_then(|s| s.parse::<FixedOffset>().ok())
+        .unwrap_or_else(|| FixedOffset::east_opt(0).unwrap())
+}
+
+fn merge_repository_page(target: &mut RepositoriesNode, page: RepositoriesNode) {
+    target.nodes.extend(page.nodes);
+    target.total_count = page.total_count;
+    target.page_info = page.page_info;
+}
+
+async fn send_with_retry<F>(mut make_request: F, context: &str) -> Result<reqwest::Response>
+where
+    F: FnMut() -> reqwest::RequestBuilder,
+{
+    let mut attempt = 0;
+    loop {
+        let response = make_request().send().await;
+        match response {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    return Ok(resp);
+                }
+
+                if attempt < RETRY_MAX_ATTEMPTS && should_retry(resp.status(), resp.headers()) {
+                    let wait = retry_delay(attempt, resp.status(), resp.headers());
+                    sleep(wait).await;
+                    attempt += 1;
+                    continue;
+                }
+
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                anyhow::bail!("{context} failed with status {status}: {body}");
+            }
+            Err(err) => {
+                if attempt < RETRY_MAX_ATTEMPTS {
+                    let wait = retry_delay(attempt, StatusCode::INTERNAL_SERVER_ERROR, &HeaderMap::new());
+                    sleep(wait).await;
+                    attempt += 1;
+                    continue;
+                }
+                return Err(err).with_context(|| format!("{context} failed to send request"));
+            }
+        }
+    }
+}
+
+fn should_retry(status: StatusCode, headers: &HeaderMap) -> bool {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return true;
+    }
+    if status.is_server_error() {
+        return true;
+    }
+    if status == StatusCode::FORBIDDEN {
+        if let Some(remaining) = header_value(headers, "x-ratelimit-remaining")
+            && remaining == "0" {
+                return true;
+            }
+        if headers.get("retry-after").is_some() {
+            return true;
+        }
+    }
+    false
+}
+
+fn retry_delay(attempt: usize, status: StatusCode, headers: &HeaderMap) -> Duration {
+    if let Some(secs) = retry_after_seconds(status, headers) {
+        return Duration::from_secs(secs);
+    }
+    let backoff = RETRY_BASE_DELAY_MS.saturating_mul(2u64.saturating_pow(attempt as u32));
+    Duration::from_millis(min(backoff, RETRY_MAX_DELAY_MS))
+}
+
+fn retry_after_seconds(status: StatusCode, headers: &HeaderMap) -> Option<u64> {
+    if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::FORBIDDEN {
+        if let Some(value) = header_value(headers, "retry-after")
+            && let Ok(secs) = value.parse::<u64>() {
+                return Some(secs);
+            }
+        if let Some(value) = header_value(headers, "x-ratelimit-reset")
+            && let Ok(epoch) = value.parse::<u64>() {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                if epoch > now {
+                    return Some(epoch - now);
+                }
+            }
+    }
+    None
+}
+
+fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
 }
 
 // REST API response types for commit search
@@ -672,5 +824,63 @@ fn level_from_string(level: &str) -> u8 {
         "THIRD_QUARTILE" => 3,
         "FOURTH_QUARTILE" => 4,
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::header::HeaderValue;
+
+    #[test]
+    fn parse_timezone_offset_defaults_to_utc() {
+        let offset = parse_timezone_offset(Some("invalid"));
+        assert_eq!(offset.local_minus_utc(), 0);
+    }
+
+    #[test]
+    fn parse_timezone_offset_parses_valid() {
+        let offset = parse_timezone_offset(Some("+08:00"));
+        assert_eq!(offset.local_minus_utc(), 8 * 3600);
+    }
+
+    #[test]
+    fn merge_repository_page_appends_nodes() {
+        let mut target = RepositoriesNode {
+            total_count: 1,
+            nodes: vec![RepoStatsNode {
+                stargazer_count: 1,
+                fork_count: 2,
+            }],
+            page_info: PageInfoNode {
+                has_next_page: true,
+                end_cursor: Some("cursor".to_string()),
+            },
+        };
+
+        let page = RepositoriesNode {
+            total_count: 2,
+            nodes: vec![RepoStatsNode {
+                stargazer_count: 3,
+                fork_count: 4,
+            }],
+            page_info: PageInfoNode {
+                has_next_page: false,
+                end_cursor: None,
+            },
+        };
+
+        merge_repository_page(&mut target, page);
+        assert_eq!(target.total_count, 2);
+        assert_eq!(target.nodes.len(), 2);
+        assert!(!target.page_info.has_next_page);
+    }
+
+    #[test]
+    fn retry_delay_prefers_retry_after() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", HeaderValue::from_static("3"));
+        let delay = retry_delay(0, StatusCode::TOO_MANY_REQUESTS, &headers);
+        assert_eq!(delay.as_secs(), 3);
     }
 }

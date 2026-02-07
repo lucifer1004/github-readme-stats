@@ -1,4 +1,10 @@
-query UserStats($login: String!, $from: DateTime!, $to: DateTime!) {
+query UserStats(
+  $login: String!
+  $from: DateTime!
+  $to: DateTime!
+  $repoAfter: String
+  $repoFirst: Int!
+) {
   user(login: $login) {
     id
     name
@@ -18,10 +24,15 @@ query UserStats($login: String!, $from: DateTime!, $to: DateTime!) {
     }
     repositories(
       ownerAffiliations: OWNER
-      first: 100
+      first: $repoFirst
+      after: $repoAfter
       orderBy: { field: STARGAZERS, direction: DESC }
     ) {
       totalCount
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
       nodes {
         stargazerCount
         forkCount
