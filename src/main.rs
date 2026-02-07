@@ -5,6 +5,7 @@ use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
 mod api;
+mod config;
 mod models;
 
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
@@ -45,22 +46,34 @@ async fn run() -> Result<()> {
     let token =
         std::env::var("GHT").context("GHT environment variable not set (GitHub token required)")?;
 
+    let config_path = std::path::Path::new("github-readme-stats.toml");
+    let config = config::load_config(config_path)?;
+
+    let pinned = config
+        .as_ref()
+        .and_then(|c| c.repos.as_ref())
+        .and_then(|r| r.pinned.clone());
+    let orgs = config
+        .as_ref()
+        .and_then(|c| c.repos.as_ref())
+        .and_then(|r| r.orgs.clone())
+        .unwrap_or_default();
+    let timezone = config
+        .as_ref()
+        .and_then(|c| c.time.as_ref())
+        .and_then(|t| t.timezone.clone());
+    let language_config =
+        config::LanguageConfig::from_file(config.as_ref().and_then(|c| c.language.as_ref()));
+
     let stats = match cli.api {
         ApiMode::Rest => {
-            let orgs: Vec<String> = std::env::var("ORGS")
-                .unwrap_or_default()
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-
             let client = api::GitHubClient::new(cli.username, token, orgs)?;
             client.fetch_stats().await?
         }
         ApiMode::Graphql => {
-            let pinned = std::env::var("PINNED_REPOS").ok();
-            let timezone = std::env::var("TIMEZONE").ok();
-            let client = api::GraphQLClient::new(token, pinned, timezone);
+            let pinned = pinned.map(|items| items.join(","));
+            let client = api::GraphQLClient::new(token, pinned, timezone)
+                .with_language_config(language_config);
             client.fetch_stats(&cli.username).await?
         }
     };

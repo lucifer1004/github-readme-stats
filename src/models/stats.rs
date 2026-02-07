@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 use super::calendar::{ContributionCalendar, StreakStats};
+use super::language::LanguageUsage;
 use super::pinned::PinnedRepo;
 use super::time_distribution::TimeDistribution;
 
@@ -54,4 +55,10 @@ pub struct UserStats {
     pub pinned_repos: Option<Vec<PinnedRepo>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_distribution: Option<TimeDistribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language_usage: Option<Vec<LanguageUsage>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language_total_changes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language_sampled_commits: Option<u64>,
 }

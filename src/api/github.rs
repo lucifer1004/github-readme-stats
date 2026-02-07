@@ -109,6 +109,9 @@ impl GitHubClient {
             streaks: None,
             pinned_repos: None,
             time_distribution: None,
+            language_usage: None,
+            language_total_changes: None,
+            language_sampled_commits: None,
         })
     }
 

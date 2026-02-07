@@ -46,13 +46,19 @@ query UserStats(
       restrictedContributionsCount
       contributionYears
       firstIssueContribution {
-        occurredAt
+        ... on CreatedIssueContribution {
+          occurredAt
+        }
       }
       firstPullRequestContribution {
-        occurredAt
+        ... on CreatedPullRequestContribution {
+          occurredAt
+        }
       }
       firstRepositoryContribution {
-        occurredAt
+        ... on CreatedRepositoryContribution {
+          occurredAt
+        }
       }
       contributionCalendar {
         totalContributions

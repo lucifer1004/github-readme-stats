@@ -4,9 +4,9 @@ use serde::Serialize;
 
 use crate::api::http;
 use crate::api::rest;
+use crate::config::LanguageConfig;
 use crate::models::{
-    ContributionCalendar, ContributionDay, ContributionWeek, PinnedRepo, TimeDistribution,
-    UserStats,
+    ContributionCalendar, ContributionDay, ContributionWeek, PinnedRepo, UserStats,
 };
 
 use super::models::{
@@ -23,6 +23,7 @@ pub struct GraphQLClient {
     client: reqwest::Client,
     pinned_repos: Vec<(String, String)>, // (owner, name) pairs
     timezone_offset: FixedOffset,        // User's timezone for time distribution
+    language_config: LanguageConfig,
 }
 
 const GRAPHQL_ENDPOINT: &str = "https://api.github.com/graphql";
@@ -70,7 +71,13 @@ impl GraphQLClient {
             client,
             pinned_repos,
             timezone_offset,
+            language_config: LanguageConfig::default(),
         }
+    }
+
+    pub fn with_language_config(mut self, language_config: LanguageConfig) -> Self {
+        self.language_config = language_config;
+        self
     }
 
     /// Fetch all user stats via GraphQL
@@ -88,7 +95,36 @@ impl GraphQLClient {
         let calendar = self.build_calendar(&user.contributions_collection);
         let streaks = calendar.compute_streaks();
         let pinned_repos = self.fetch_pinned_repos(&one_year_ago, &user.id).await;
-        let time_distribution = self.fetch_time_distribution_optional(&user.login).await;
+
+        let commit_sample = match rest::fetch_commit_sample(
+            &self.client,
+            &user.login,
+            self.language_config.commits_limit,
+        )
+        .await
+        {
+            Ok(commits) => Some(commits),
+            Err(e) => {
+                eprintln!("warning: failed to fetch commit sample: {e:#}");
+                None
+            }
+        };
+
+        let time_distribution = commit_sample
+            .as_ref()
+            .map(|commits| rest::compute_time_distribution(commits, self.timezone_offset));
+        let language_stats = if let Some(ref commits) = commit_sample {
+            match rest::compute_language_usage(&self.client, commits, &self.language_config).await {
+                Ok(result) if result.1 > 0 => Some(result),
+                Ok(_) => None,
+                Err(e) => {
+                    eprintln!("warning: failed to compute language usage: {e:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let (first_issue, first_pr, first_repo) =
             self.first_contributions(&user.contributions_collection);
 
@@ -127,6 +163,9 @@ impl GraphQLClient {
             streaks: Some(streaks),
             pinned_repos,
             time_distribution,
+            language_usage: language_stats.as_ref().map(|v| v.0.clone()),
+            language_total_changes: language_stats.as_ref().map(|v| v.1),
+            language_sampled_commits: language_stats.as_ref().map(|v| v.2),
         })
     }
 
@@ -291,22 +330,6 @@ impl GraphQLClient {
         }
 
         if repos.is_empty() { None } else { Some(repos) }
-    }
-
-    async fn fetch_time_distribution_optional(&self, username: &str) -> Option<TimeDistribution> {
-        match rest::fetch_time_distribution(
-            &self.client,
-            username,
-            self.timezone_offset,
-        )
-        .await
-        {
-            Ok(dist) => Some(dist),
-            Err(e) => {
-                eprintln!("warning: failed to fetch time distribution: {e:#}");
-                None
-            }
-        }
     }
 
     async fn fetch_repo(

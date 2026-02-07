@@ -61,9 +61,10 @@ fn should_retry(status: StatusCode, headers: &HeaderMap) -> bool {
     }
     if status == StatusCode::FORBIDDEN {
         if let Some(remaining) = header_value(headers, "x-ratelimit-remaining")
-            && remaining == "0" {
-                return true;
-            }
+            && remaining == "0"
+        {
+            return true;
+        }
         if headers.get("retry-after").is_some() {
             return true;
         }
@@ -82,19 +83,21 @@ pub(crate) fn retry_delay(attempt: usize, status: StatusCode, headers: &HeaderMa
 fn retry_after_seconds(status: StatusCode, headers: &HeaderMap) -> Option<u64> {
     if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::FORBIDDEN {
         if let Some(value) = header_value(headers, "retry-after")
-            && let Ok(secs) = value.parse::<u64>() {
-                return Some(secs);
-            }
+            && let Ok(secs) = value.parse::<u64>()
+        {
+            return Some(secs);
+        }
         if let Some(value) = header_value(headers, "x-ratelimit-reset")
-            && let Ok(epoch) = value.parse::<u64>() {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                if epoch > now {
-                    return Some(epoch - now);
-                }
+            && let Ok(epoch) = value.parse::<u64>()
+        {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if epoch > now {
+                return Some(epoch - now);
             }
+        }
     }
     None
 }

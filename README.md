@@ -18,22 +18,34 @@ export GHT="ghp_your_token"
 # Basic usage
 github-readme-stats your-username -o stats.json
 
-# With timezone for commit time distribution
-export TIMEZONE="+08:00"
+# Optional settings are now read from github-readme-stats.toml
 github-readme-stats your-username -o stats.json
+```
 
-# With pinned repos
-export PINNED_REPOS="owner/repo1,owner/repo2"
-github-readme-stats your-username -o stats.json
+## Configuration file
+
+Create `github-readme-stats.toml` in the working directory for optional settings
+(token stays in `GHT` env only).
+
+```toml
+[time]
+timezone = "+08:00"
+
+[repos]
+pinned = ["owner/repo1", "owner/repo2"]
+orgs = ["my-org"]
+
+[language]
+commits_limit = 1000
+top_n = 10
+exclude = ["HTML", "CSS"]
 ```
 
 ## Environment Variables
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `GHT` | yes | GitHub Personal Access Token (`read:user` scope) |
-| `TIMEZONE` | no | Timezone offset (e.g., `+08:00`). Default: `+00:00` |
-| `PINNED_REPOS` | no | Comma-separated repos to track (e.g., `owner/repo1,owner/repo2`) |
+| Variable | Required | Description                                      |
+| -------- | -------- | ------------------------------------------------ |
+| `GHT`    | yes      | GitHub Personal Access Token (`read:user` scope) |
 
 ## Output
 
@@ -55,9 +67,18 @@ JSON with the following structure:
   "contribution_calendar": { ... },
   "streaks": { ... },
   "pinned_repos": [ ... ],
-  "time_distribution": { ... }
+  "time_distribution": { ... },
+  "language_usage": [ ... ],
+  "language_total_changes": 12345,
+  "language_sampled_commits": 1000
 }
 ```
+
+## Notes
+
+- `language_usage` is derived from commit file changes (additions + deletions), not repo sizes.
+- Time distribution and language usage share the same commit sample (`language.commits_limit`).
+- Language stats can be rate-limit heavy because each sampled commit fetches commit details.
 
 ## Used by
 
