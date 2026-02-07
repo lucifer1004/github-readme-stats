@@ -171,7 +171,10 @@ impl GitHubClient {
         let mut page: u32 = 1;
         loop {
             let path = format!("/orgs/{org}/repos");
-            let params = OrgRepoParams { per_page: 100, page };
+            let params = OrgRepoParams {
+                per_page: 100,
+                page,
+            };
             let batch: Vec<octocrab::models::Repository> = self
                 .retry(&format!("fetch {org} repos page {page}"), || {
                     self.octocrab.get(path.clone(), Some(&params))
@@ -239,7 +242,7 @@ impl GitHubClient {
                     attempt += 1;
                 }
                 Err(err) => {
-                    return Err(err).with_context(|| format!("{context} failed after retries"))
+                    return Err(err).with_context(|| format!("{context} failed after retries"));
                 }
             }
         }

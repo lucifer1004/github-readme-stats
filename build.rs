@@ -31,8 +31,7 @@ pub const REPO_QUERY: &str = r#"{repo_query}"#;
         repo_query = repo_query.trim(),
     );
 
-    fs::write(&dest_path, generated)
-        .map_err(|e| format!("Failed to write queries.rs: {e}"))?;
+    fs::write(&dest_path, generated).map_err(|e| format!("Failed to write queries.rs: {e}"))?;
 
     // Rerun if query files change
     println!("cargo:rerun-if-changed=src/api/queries/user.graphql");
