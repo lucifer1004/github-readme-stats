@@ -51,8 +51,15 @@ struct UserNode {
     id: String, // GitHub node ID for author filtering
     name: Option<String>,
     login: String,
+    bio: Option<String>,
+    company: Option<String>,
+    location: Option<String>,
+    website_url: Option<String>,
+    twitter_username: Option<String>,
+    avatar_url: Option<String>,
     created_at: DateTime<Utc>,
     followers: CountNode,
+    organizations: CountNode,
     repositories: RepositoriesNode,
     contributions_collection: ContributionsCollectionNode,
 }
@@ -83,7 +90,19 @@ struct ContributionsCollectionNode {
     total_commit_contributions: u64,
     total_pull_request_contributions: u64,
     total_issue_contributions: u64,
+    total_repository_contributions: u64,
+    restricted_contributions_count: u64,
+    contribution_years: Vec<i32>,
+    first_issue_contribution: Option<FirstContributionNode>,
+    first_pull_request_contribution: Option<FirstContributionNode>,
+    first_repository_contribution: Option<FirstContributionNode>,
     contribution_calendar: CalendarNode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FirstContributionNode {
+    occurred_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,6 +146,16 @@ struct RepoNode {
     description: Option<String>,
     stargazer_count: u64,
     fork_count: u64,
+    is_archived: bool,
+    is_fork: bool,
+    is_template: bool,
+    disk_usage: u64,
+    watchers: CountNode,
+    issues: CountNode,
+    pull_requests: CountNode,
+    releases: CountNode,
+    license_info: Option<LicenseNode>,
+    repository_topics: RepositoryTopicsNode,
     primary_language: Option<LanguageNode>,
     default_branch_ref: Option<DefaultBranchRefNode>,
 }
@@ -139,7 +168,32 @@ struct LanguageNode {
 
 #[derive(Debug, Deserialize)]
 struct DefaultBranchRefNode {
+    name: String,
     target: CommitTarget,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LicenseNode {
+    spdx_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RepositoryTopicsNode {
+    nodes: Vec<RepositoryTopicNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RepositoryTopicNode {
+    topic: TopicNode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TopicNode {
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -290,9 +344,32 @@ impl GraphQLClient {
             }
         };
 
+        let first_issue = user
+            .contributions_collection
+            .first_issue_contribution
+            .as_ref()
+            .map(|c| c.occurred_at.format("%Y-%m-%d").to_string());
+        let first_pr = user
+            .contributions_collection
+            .first_pull_request_contribution
+            .as_ref()
+            .map(|c| c.occurred_at.format("%Y-%m-%d").to_string());
+        let first_repo = user
+            .contributions_collection
+            .first_repository_contribution
+            .as_ref()
+            .map(|c| c.occurred_at.format("%Y-%m-%d").to_string());
+
         Ok(UserStats {
             name: user.name,
             username: user.login,
+            bio: user.bio,
+            company: user.company,
+            location: user.location,
+            website_url: user.website_url,
+            twitter_username: user.twitter_username,
+            avatar_url: user.avatar_url,
+            organizations: Some(user.organizations.total_count),
             repos: user.repositories.total_count,
             stars: total_stars,
             forks: total_forks,
@@ -302,6 +379,16 @@ impl GraphQLClient {
                 .contributions_collection
                 .total_pull_request_contributions,
             issues: user.contributions_collection.total_issue_contributions,
+            total_repository_contributions: Some(
+                user.contributions_collection.total_repository_contributions,
+            ),
+            restricted_contributions: Some(
+                user.contributions_collection.restricted_contributions_count,
+            ),
+            contribution_years: Some(user.contributions_collection.contribution_years),
+            first_issue_contribution: first_issue,
+            first_pull_request_contribution: first_pr,
+            first_repository_contribution: first_repo,
             account_age_years: age_years,
             account_age_days: age_days,
             contribution_calendar: Some(calendar),
@@ -429,13 +516,36 @@ impl GraphQLClient {
                 (0, 0, 0, None)
             };
 
+        let topics: Vec<String> = repo
+            .repository_topics
+            .nodes
+            .iter()
+            .map(|n| n.topic.name.clone())
+            .collect();
+        let topics = if topics.is_empty() {
+            None
+        } else {
+            Some(topics)
+        };
+
         Ok(PinnedRepo {
             name: repo.name,
             description: repo.description,
             stars: repo.stargazer_count,
             forks: repo.fork_count,
+            watchers: repo.watchers.total_count,
+            issues: repo.issues.total_count,
+            pull_requests: repo.pull_requests.total_count,
+            releases: repo.releases.total_count,
+            license: repo.license_info.and_then(|l| l.spdx_id),
+            topics,
             language: repo.primary_language.as_ref().map(|l| l.name.clone()),
             language_color: repo.primary_language.and_then(|l| l.color),
+            is_archived: repo.is_archived,
+            is_fork: repo.is_fork,
+            is_template: repo.is_template,
+            disk_usage: repo.disk_usage,
+            default_branch: repo.default_branch_ref.as_ref().map(|b| b.name.clone()),
             recent_additions: additions,
             recent_deletions: deletions,
             recent_commits: commits,
@@ -491,28 +601,29 @@ impl GraphQLClient {
 
             for item in &search_result.items {
                 if let Some(ref commit) = item.commit
-                    && let Some(ref author) = commit.author {
-                        // Parse the date and convert to user's timezone
-                        if let Ok(utc_time) = DateTime::parse_from_rfc3339(&author.date) {
-                            let local_time = utc_time.with_timezone(&self.timezone_offset);
-                            let hour = local_time.hour() as u8;
-                            // weekday(): Mon=0, Tue=1, ..., Sun=6
-                            let weekday = local_time.weekday().num_days_from_monday() as u8;
-                            distribution.add(hour, weekday);
+                    && let Some(ref author) = commit.author
+                {
+                    // Parse the date and convert to user's timezone
+                    if let Ok(utc_time) = DateTime::parse_from_rfc3339(&author.date) {
+                        let local_time = utc_time.with_timezone(&self.timezone_offset);
+                        let hour = local_time.hour() as u8;
+                        // weekday(): Mon=0, Tue=1, ..., Sun=6
+                        let weekday = local_time.weekday().num_days_from_monday() as u8;
+                        distribution.add(hour, weekday);
 
-                            // Track date range
-                            match earliest {
-                                None => earliest = Some(local_time),
-                                Some(e) if local_time < e => earliest = Some(local_time),
-                                _ => {}
-                            }
-                            match latest {
-                                None => latest = Some(local_time),
-                                Some(l) if local_time > l => latest = Some(local_time),
-                                _ => {}
-                            }
+                        // Track date range
+                        match earliest {
+                            None => earliest = Some(local_time),
+                            Some(e) if local_time < e => earliest = Some(local_time),
+                            _ => {}
+                        }
+                        match latest {
+                            None => latest = Some(local_time),
+                            Some(l) if local_time > l => latest = Some(local_time),
+                            _ => {}
                         }
                     }
+                }
             }
 
             // If we got fewer than 100, we've reached the end

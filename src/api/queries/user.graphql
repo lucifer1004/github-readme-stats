@@ -3,8 +3,17 @@ query UserStats($login: String!, $from: DateTime!, $to: DateTime!) {
     id
     name
     login
+    bio
+    company
+    location
+    websiteUrl
+    twitterUsername
+    avatarUrl
     createdAt
     followers {
+      totalCount
+    }
+    organizations {
       totalCount
     }
     repositories(
@@ -22,6 +31,18 @@ query UserStats($login: String!, $from: DateTime!, $to: DateTime!) {
       totalCommitContributions
       totalPullRequestContributions
       totalIssueContributions
+      totalRepositoryContributions
+      restrictedContributionsCount
+      contributionYears
+      firstIssueContribution {
+        occurredAt
+      }
+      firstPullRequestContribution {
+        occurredAt
+      }
+      firstRepositoryContribution {
+        occurredAt
+      }
       contributionCalendar {
         totalContributions
         weeks {

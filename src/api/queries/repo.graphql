@@ -9,11 +9,38 @@ query RepoStats(
     description
     stargazerCount
     forkCount
+    isArchived
+    isFork
+    isTemplate
+    diskUsage
+    watchers {
+      totalCount
+    }
+    issues {
+      totalCount
+    }
+    pullRequests {
+      totalCount
+    }
+    releases {
+      totalCount
+    }
+    licenseInfo {
+      spdxId
+    }
+    repositoryTopics(first: 10) {
+      nodes {
+        topic {
+          name
+        }
+      }
+    }
     primaryLanguage {
       name
       color
     }
     defaultBranchRef {
+      name
       target {
         ... on Commit {
           history(first: 100, since: $since, author: { id: $authorId }) {
