@@ -2,8 +2,8 @@
 
 ## Project summary
 
-Rust CLI that fetches GitHub user statistics via GraphQL (profile/contributions) and REST
-(commit sample, time distribution, language stats), then outputs JSON.
+Rust CLI that fetches GitHub user statistics via GraphQL (profile/contributions, commit
+history, time distribution, language stats), then outputs JSON.
 Single HTTP library: `reqwest`.
 
 ## Repository layout
@@ -11,11 +11,10 @@ Single HTTP library: `reqwest`.
 - `src/main.rs`: CLI entry point and orchestration.
 - `src/config.rs`: TOML config file parsing (`github-readme-stats.toml`).
 - `src/api/mod.rs`: API module root, exports `GraphQLClient`.
-- `src/api/graphql/`: GraphQL client (`client.rs`), response models (`models.rs`), retry shim (`retry.rs`).
-- `src/api/rest/`: REST helpers -- `commit_search.rs`, `language_usage.rs`, `time_distribution.rs`.
+- `src/api/graphql/`: GraphQL client (`client.rs`), commit sampling and language stats (`commit_history.rs`), time distribution (`time_distribution.rs`), response models (`models.rs`), retry shim (`retry.rs`).
 - `src/api/http.rs`: shared `reqwest::Client` builder (auth headers, timeouts).
 - `src/api/retry.rs`: generic retry with exponential backoff and rate-limit awareness.
-- `src/api/queries/`: `.graphql` files (`user.graphql`, `repo.graphql`) embedded at build time.
+- `src/api/queries/`: `.graphql` files (`user.graphql`, `repo.graphql`, `commits.graphql`) embedded at build time.
 - `src/models/`: JSON output models (`UserStats`, `PinnedRepo`, `LanguageUsage`, etc.).
 - `data/languages.yml`: GitHub Linguist language definitions snapshot (used at build time).
 - `build.rs`: build script that generates `queries.rs` and `languages.rs` from source data.
@@ -43,11 +42,16 @@ timezone = "+08:00"
 pinned = ["owner/repo1", "owner/repo2"]
 
 [language]
-commits_limit = 1000
+commits_limit = 5000
+commits_per_repo = 1000
+repos_limit = 100
 top_n = 10
 exclude = ["HTML", "CSS"]
 types = ["programming"]
 ```
+
+All three sampling limits accept `0` to mean "unlimited" (opt-in). `repos_limit` is
+capped at 100 by the GitHub API.
 
 Example run:
 

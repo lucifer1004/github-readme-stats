@@ -1,0 +1,35 @@
+query CommitHistory(
+  $owner: String!
+  $name: String!
+  $since: GitTimestamp!
+  $authorId: ID!
+  $after: String
+) {
+  repository(owner: $owner, name: $name) {
+    languages(first: 100, orderBy: { field: SIZE, direction: DESC }) {
+      edges {
+        size
+        node {
+          name
+        }
+      }
+    }
+    defaultBranchRef {
+      target {
+        ... on Commit {
+          history(first: 100, after: $after, since: $since, author: { id: $authorId }) {
+            nodes {
+              authoredDate
+              additions
+              deletions
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+          }
+        }
+      }
+    }
+  }
+}

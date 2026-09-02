@@ -79,6 +79,20 @@ pub(crate) struct ContributionsCollectionNode {
     pub(crate) first_pull_request_contribution: Option<FirstContributionNode>,
     pub(crate) first_repository_contribution: Option<FirstContributionNode>,
     pub(crate) contribution_calendar: CalendarNode,
+    pub(crate) commit_contributions_by_repository: Vec<CommitContributionByRepositoryNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CommitContributionByRepositoryNode {
+    pub(crate) repository: ContributedRepoNode,
+    pub(crate) contributions: CountNode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ContributedRepoNode {
+    pub(crate) name_with_owner: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,6 +209,72 @@ pub(crate) struct HistoryNode {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CommitNode {
     pub(crate) committed_date: DateTime<Utc>,
+    pub(crate) additions: u64,
+    pub(crate) deletions: u64,
+}
+
+// ===== Commit history (sampling) query response types =====
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct CommitsResponse {
+    pub(crate) data: Option<CommitsDataRoot>,
+    pub(crate) errors: Option<Vec<GraphQLError>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct CommitsDataRoot {
+    pub(crate) repository: Option<CommitsRepoNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CommitsRepoNode {
+    pub(crate) languages: LanguagesNode,
+    pub(crate) default_branch_ref: Option<CommitsBranchRefNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LanguagesNode {
+    pub(crate) edges: Vec<LanguageEdgeNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LanguageEdgeNode {
+    pub(crate) size: u64,
+    pub(crate) node: LanguageNameNode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LanguageNameNode {
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CommitsBranchRefNode {
+    pub(crate) target: CommitsTargetNode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CommitsTargetNode {
+    pub(crate) history: Option<CommitSampleHistoryNode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CommitSampleHistoryNode {
+    pub(crate) nodes: Vec<SampledCommitNode>,
+    pub(crate) page_info: PageInfoNode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SampledCommitNode {
+    pub(crate) authored_date: DateTime<Utc>,
     pub(crate) additions: u64,
     pub(crate) deletions: u64,
 }

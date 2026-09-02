@@ -70,6 +70,14 @@ query UserStats(
           }
         }
       }
+      commitContributionsByRepository(maxRepositories: 100) {
+        repository {
+          nameWithOwner
+        }
+        contributions {
+          totalCount
+        }
+      }
     }
   }
 }

@@ -29,6 +29,8 @@ fn generate_graphql_queries(out_dir: &Path) -> Result<(), Box<dyn std::error::Er
         .map_err(|e| format!("Failed to read user.graphql: {e}"))?;
     let repo_query = fs::read_to_string(queries_dir.join("repo.graphql"))
         .map_err(|e| format!("Failed to read repo.graphql: {e}"))?;
+    let commits_query = fs::read_to_string(queries_dir.join("commits.graphql"))
+        .map_err(|e| format!("Failed to read commits.graphql: {e}"))?;
 
     let generated = format!(
         r##"/// GraphQL query for user profile and contributions (from user.graphql)
@@ -36,9 +38,13 @@ pub const USER_QUERY: &str = r#"{user_query}"#;
 
 /// GraphQL query for repository stats with author filter (from repo.graphql)
 pub const REPO_QUERY: &str = r#"{repo_query}"#;
+
+/// GraphQL query for per-repo commit history and languages (from commits.graphql)
+pub const COMMITS_QUERY: &str = r#"{commits_query}"#;
 "##,
         user_query = user_query.trim(),
         repo_query = repo_query.trim(),
+        commits_query = commits_query.trim(),
     );
 
     fs::write(out_dir.join("queries.rs"), generated)
@@ -46,6 +52,7 @@ pub const REPO_QUERY: &str = r#"{repo_query}"#;
 
     println!("cargo:rerun-if-changed=src/api/queries/user.graphql");
     println!("cargo:rerun-if-changed=src/api/queries/repo.graphql");
+    println!("cargo:rerun-if-changed=src/api/queries/commits.graphql");
 
     Ok(())
 }
@@ -130,6 +137,7 @@ fn generate_language_map(out_dir: &Path) -> Result<(), Box<dyn std::error::Error
     let mut code = String::from(
         "/// Auto-generated from GitHub Linguist languages.yml + data/overrides.toml\n\
          /// Returns (language_name, language_type) for a file extension (without leading dot).\n\
+         #[allow(dead_code)]\n\
          pub fn extension_to_language(ext: &str) -> Option<(&'static str, &'static str)> {\n\
          \x20   match ext {\n",
     );
@@ -142,6 +150,25 @@ fn generate_language_map(out_dir: &Path) -> Result<(), Box<dyn std::error::Error
         ));
     }
 
+    code.push_str("        _ => None,\n    }\n}\n");
+
+    // Generate language name (lowercased) -> type lookup.
+    code.push_str(
+        "\n/// Auto-generated from GitHub Linguist languages.yml\n\
+         /// Returns the Linguist type for a language name (case-insensitive).\n\
+         pub fn language_type(name: &str) -> Option<&'static str> {\n\
+         \x20   match name {\n",
+    );
+    let mut seen_names = std::collections::HashSet::new();
+    for name in languages.keys() {
+        let escaped_name = name.replace('\\', "\\\\").replace('"', "\\\"");
+        let lower = escaped_name.to_lowercase();
+        if !seen_names.insert(lower.clone()) {
+            continue;
+        }
+        let lang_type = languages[name].lang_type.as_deref().unwrap_or("data");
+        code.push_str(&format!("        \"{lower}\" => Some(\"{lang_type}\"),\n"));
+    }
     code.push_str("        _ => None,\n    }\n}\n");
 
     fs::write(out_dir.join("languages.rs"), code)

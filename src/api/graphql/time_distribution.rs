@@ -1,13 +1,11 @@
-use chrono::{DateTime, Datelike, FixedOffset, Timelike};
+use chrono::{DateTime, Datelike, FixedOffset, Timelike, Utc};
 
 use crate::models::TimeDistribution;
 
-use super::commit_search::CommitSample;
-
-/// Compute commit time distribution from a commit sample.
+/// Compute commit time distribution from a sample of authored dates.
 /// Returns a 24×7 grid of commit counts by hour and weekday.
 pub(crate) fn compute_time_distribution(
-    commits: &[CommitSample],
+    dates: &[DateTime<Utc>],
     timezone_offset: FixedOffset,
 ) -> TimeDistribution {
     let tz_str = format!(
@@ -21,10 +19,7 @@ pub(crate) fn compute_time_distribution(
     let mut earliest: Option<DateTime<FixedOffset>> = None;
     let mut latest: Option<DateTime<FixedOffset>> = None;
 
-    for commit in commits {
-        let Some(utc_time) = commit.authored_at else {
-            continue;
-        };
+    for utc_time in dates {
         let local_time = utc_time.with_timezone(&timezone_offset);
         let hour = local_time.hour() as u8;
         // weekday(): Mon=0, Tue=1, ..., Sun=6
